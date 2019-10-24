@@ -20,7 +20,7 @@ from backend.celery import app
 from substrapp.utils import get_hash, get_owner, create_directory, uncompress_content
 from substrapp.ledger_utils import (log_start_tuple, log_success_tuple, log_fail_tuple,
                                     query_tuples, LedgerError, LedgerStatusError, get_object_from_ledger)
-from substrapp.tasks.utils import ResourcesManager, compute_docker, get_asset_content
+from substrapp.tasks.utils import ResourcesManager, compute_docker, get_asset_content, list_files
 from substrapp.tasks.exception_handler import compute_error_code
 
 
@@ -117,10 +117,11 @@ def _put_model(subtuple, subtuple_directory, model_content, model_hash, traintup
 
         if not os.path.exists(model_dst_path):
             os.link(model.file.path, model_dst_path)
-        else:
-            # verify that local subtuple model file is not corrupted
-            if get_hash(model_dst_path, traintuple_key) != model_hash:
-                raise Exception('Model Hash in Subtuple is not the same as in local medias')
+
+    finally:
+        # verify that local subtuple model file is not corrupted
+        if get_hash(model_dst_path, traintuple_key) != model_hash:
+            raise Exception('Model Hash in Subtuple is not the same as in local medias')
 
 
 def put_model(subtuple, subtuple_directory, model_content):
@@ -149,15 +150,13 @@ def put_opener(subtuple, subtuple_directory):
     opener_dst_path = path.join(subtuple_directory, 'opener/opener.py')
     if not os.path.exists(opener_dst_path):
         os.link(datamanager.data_opener.path, opener_dst_path)
-    else:
-        # verify that local subtuple data opener file is not corrupted
-        if get_hash(opener_dst_path) != data_opener_hash:
-            raise Exception('DataOpener Hash in Subtuple is not the same as in local medias')
+
+    if get_hash(opener_dst_path) != data_opener_hash:
+        raise Exception('DataOpener Hash in Subtuple is not the same as in local medias')
 
 
 def put_data_sample(subtuple, subtuple_directory):
     from substrapp.models import DataSample
-
     for data_sample_key in subtuple['dataset']['keys']:
         data_sample = DataSample.objects.get(pk=data_sample_key)
         data_sample_hash = dirhash(data_sample.path, 'sha256')
@@ -194,10 +193,14 @@ def build_subtuple_folders(subtuple):
 
 
 def remove_subtuple_materials(subtuple_directory):
+    logging.info('Remove subtuple materials')
+    list_files(subtuple_directory)
     try:
         shutil.rmtree(subtuple_directory)
     except Exception as e:
         logging.exception(e)
+    finally:
+        list_files(subtuple_directory)
 
 
 # Instatiate Ressource Manager in BaseManager to share it between celery concurrent tasks
@@ -306,6 +309,8 @@ def compute_task(self, tuple_type, subtuple, compute_plan_id):
 
 def prepare_materials(subtuple, tuple_type):
 
+    logging.info(f'Prepare materials for {tuple_type} task')
+
     # get subtuple components
     metrics_content = get_objective(subtuple)
     algo_content = get_algo(subtuple)
@@ -318,16 +323,17 @@ def prepare_materials(subtuple, tuple_type):
 
     # create subtuple
     subtuple_directory = build_subtuple_folders(subtuple)
-    put_opener(subtuple, subtuple_directory)
-    put_data_sample(subtuple, subtuple_directory)
-    put_metric(subtuple_directory, metrics_content)
     put_algo(subtuple_directory, algo_content)
+    put_opener(subtuple, subtuple_directory)
+    put_metric(subtuple_directory, metrics_content)
+    put_data_sample(subtuple, subtuple_directory)
     if tuple_type == 'testtuple':
         put_model(subtuple, subtuple_directory, model_content)
     elif tuple_type == 'traintuple' and models_content:
         put_models(subtuple, subtuple_directory, models_content)
 
-    logging.info(f'Prepare materials for {tuple_type} task: success ')
+    logging.info(f'Prepare materials for {tuple_type} task: success')
+    list_files(subtuple_directory)
 
 
 def do_task(subtuple, tuple_type):
